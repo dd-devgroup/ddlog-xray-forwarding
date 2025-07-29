@@ -1,5 +1,5 @@
 ```
-bash <(curl -sSL https://raw.githubusercontent.com/dd-devgroup/ddlog-xray-forwarding/v2iplimit.sh)
+bash <(curl -sSL https://raw.githubusercontent.com/dd-devgroup/ddlog-xray-forwarding/refs/heads/main/v2iplimit.sh)
 ```
 
 
