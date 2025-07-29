@@ -47,21 +47,34 @@ def ssh_connect(host, user, port, use_key, key_path=None, password=None):
         print(f"❌ Ошибка подключения к {host}: {e}")
         return None
 
-def run_local_logs():
-    print("Запуск логов локальной ноды (ctrl+c для выхода)...")
-    try:
-        subprocess.run(["docker", "exec", "-it", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"])
-    except KeyboardInterrupt:
-        print("\nВыход из просмотра логов.")
+def stream_logs_and_save(log_stream, filename):
+    with open(filename, "a", encoding="utf-8") as logfile:
+        try:
+            for line in iter(log_stream.readline, ""):
+                print(f"[{filename}] {line}", end="") 
+                logfile.write(line)
+                logfile.flush()
+        except Exception as e:
+            print(f"Ошибка в потоке логов {filename}: {e}")
 
-def run_ssh_logs(ssh):
-    try:
-        stdin, stdout, stderr = ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
-        print("Просмотр логов удалённой ноды (ctrl+c для выхода)...")
-        for line in iter(stdout.readline, ""):
-            print(line, end="")
-    except KeyboardInterrupt:
-        print("\nВыход из просмотра логов.")
+def start_local_log_thread():
+    proc = subprocess.Popen(
+        ["docker", "exec", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    filename = "logs_xray_local.log"
+    t = threading.Thread(target=stream_logs_and_save, args=(proc.stdout, filename), daemon=True)
+    t.start()
+    print("✅ Запущен фоновый поток локальных логов")
+
+def start_ssh_log_thread(ssh, node_name):
+    stdin, stdout, stderr = ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
+    filename = f"logs_xray_{node_name}.log"
+    t = threading.Thread(target=stream_logs_and_save, args=(stdout, filename), daemon=True)
+    t.start()
+    print(f"✅ Запущен фоновый поток логов для ноды {node_name}")
 
 def add_remote_node():
     host = input("IP ноды: ").strip()
@@ -102,6 +115,7 @@ def add_remote_node():
         ssh.exec_command("systemctl restart rsyslog")
         print(f"✅ Нода {name} успешно добавлена и настроена.")
 
+        # Сохраняем ноду
         nodes = load_nodes()
         nodes.append({
             "host": host,
@@ -112,11 +126,12 @@ def add_remote_node():
             "key_path": key_path if use_key else None
         })
         save_nodes(nodes)
+        start_ssh_log_thread(ssh, name)
 
     except Exception as e:
         print(f"Ошибка настройки ноды: {e}")
     finally:
-        ssh.close()
+        pass
 
 def show_nodes():
     nodes = load_nodes()
@@ -150,16 +165,18 @@ def tail_remote_logs_menu():
     if not ssh:
         print("Не удалось подключиться к ноде.")
         return
-    run_ssh_logs(ssh)
-    ssh.close()
+    start_ssh_log_thread(ssh, node['name'])
+    print("Фоновый сбор логов запущен. Чтобы выйти — прервите программу (Ctrl+C).")
 
 def main():
+    start_local_log_thread()
+
     while True:
         print("\n=== Главное меню ===")
         print("1. Добавить удалённую ноду")
         print("2. Посмотреть список нод")
-        print("3. Просмотр логов локальной ноды")
-        print("4. Просмотр логов удалённой ноды")
+        print("3. Просмотр локальных логов (фоновый поток запущен автоматически)")
+        print("4. Запуск фонового сбора логов удалённой ноды")
         print("5. Выход")
         choice = input("Выбор: ").strip()
 
@@ -168,7 +185,7 @@ def main():
         elif choice == "2":
             show_nodes()
         elif choice == "3":
-            run_local_logs()
+            print("Локальные логи собираются в файл logs_xray_local.log")
         elif choice == "4":
             tail_remote_logs_menu()
         elif choice == "5":
