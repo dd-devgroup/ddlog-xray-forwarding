@@ -204,6 +204,3 @@ def main():
             break
         else:
             print("Некорректный выбор.")
-
-if __name__ == "__main__":
-    main()
