@@ -1,9 +1,12 @@
+import subprocess
 import getpass
 import paramiko
-import json
+import threading
 import os
+import json
 
 NODES_FILE = "nodes.json"
+
 CENTRAL_HOST = "89.39.121.249"
 CENTRAL_PORT = 514
 
@@ -31,7 +34,7 @@ def save_nodes(nodes):
     with open(NODES_FILE, "w") as f:
         json.dump(nodes, f, indent=2)
 
-def connect_ssh(host, user, port, use_key, key_path=None, password=None):
+def ssh_connect(host, user, port, use_key, key_path=None, password=None):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
@@ -44,7 +47,23 @@ def connect_ssh(host, user, port, use_key, key_path=None, password=None):
         print(f"❌ Ошибка подключения к {host}: {e}")
         return None
 
-def add_node():
+def run_local_logs():
+    print("Запуск логов локальной ноды (ctrl+c для выхода)...")
+    try:
+        subprocess.run(["docker", "exec", "-it", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"])
+    except KeyboardInterrupt:
+        print("\nВыход из просмотра логов.")
+
+def run_ssh_logs(ssh):
+    try:
+        stdin, stdout, stderr = ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
+        print("Просмотр логов удалённой ноды (ctrl+c для выхода)...")
+        for line in iter(stdout.readline, ""):
+            print(line, end="")
+    except KeyboardInterrupt:
+        print("\nВыход из просмотра логов.")
+
+def add_remote_node():
     host = input("IP ноды: ").strip()
     name = input("Название (уникальное): ").strip()
     user = input("SSH пользователь (по умолчанию root): ").strip() or "root"
@@ -63,13 +82,13 @@ def add_node():
         key_path = None
         password = getpass.getpass("Введите SSH пароль: ")
 
-    ssh = connect_ssh(host, user, port, use_key, key_path, password)
+    ssh = ssh_connect(host, user, port, use_key, key_path, password)
     if not ssh:
         print("Не удалось подключиться. Попробуйте снова.")
         return
 
     try:
-        print("📦 Проверяем и устанавливаем rsyslog...")
+        print("Установка rsyslog и настройка конфигурации...")
         ssh.exec_command("apt update && apt install -y rsyslog")
 
         conf = CONF_TEMPLATE.format(node=name, central_host=CENTRAL_HOST, central_port=CENTRAL_PORT)
@@ -95,7 +114,7 @@ def add_node():
         save_nodes(nodes)
 
     except Exception as e:
-        print(f"❌ Ошибка настройки ноды: {e}")
+        print(f"Ошибка настройки ноды: {e}")
     finally:
         ssh.close()
 
@@ -108,19 +127,52 @@ def show_nodes():
         auth = "ключ" if n.get("auth_method") == "key" else "пароль"
         print(f"{i}. {n['name']} — {n['host']}:{n.get('port',22)} (пользователь {n.get('user','root')}, аутентификация: {auth})")
 
+def tail_remote_logs_menu():
+    nodes = load_nodes()
+    if not nodes:
+        print("Нет добавленных нод.")
+        return
+    print("Выберите ноду для просмотра логов:")
+    for i, n in enumerate(nodes, 1):
+        print(f"{i}. {n['name']} ({n['host']})")
+    choice = input("Номер ноды: ").strip()
+    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(nodes):
+        print("Некорректный выбор.")
+        return
+    node = nodes[int(choice)-1]
+
+    use_key = node.get("auth_method") == "key"
+    password = None
+    if not use_key:
+        password = getpass.getpass(f"Введите SSH пароль для {node['user']}@{node['host']}: ")
+
+    ssh = ssh_connect(node['host'], node.get("user","root"), node.get("port",22), use_key, node.get("key_path"), password)
+    if not ssh:
+        print("Не удалось подключиться к ноде.")
+        return
+    run_ssh_logs(ssh)
+    ssh.close()
+
 def main():
     while True:
-        print("\n=== Меню ===")
-        print("1. Добавить ноду")
+        print("\n=== Главное меню ===")
+        print("1. Добавить удалённую ноду")
         print("2. Посмотреть список нод")
-        print("3. Выйти")
+        print("3. Просмотр логов локальной ноды")
+        print("4. Просмотр логов удалённой ноды")
+        print("5. Выход")
         choice = input("Выбор: ").strip()
 
         if choice == "1":
-            add_node()
+            add_remote_node()
         elif choice == "2":
             show_nodes()
         elif choice == "3":
+            run_local_logs()
+        elif choice == "4":
+            tail_remote_logs_menu()
+        elif choice == "5":
+            print("Выход...")
             break
         else:
             print("Некорректный выбор.")
