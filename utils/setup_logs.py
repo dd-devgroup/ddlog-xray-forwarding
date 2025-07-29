@@ -4,10 +4,11 @@ import paramiko
 import threading
 import os
 import json
+import socket
 
 NODES_FILE = "nodes.json"
 
-CENTRAL_HOST = "89.39.121.249"
+CENTRAL_HOST = get_local_ip()
 CENTRAL_PORT = 514
 
 CONF_TEMPLATE = """
@@ -23,6 +24,16 @@ input(type="imfile"
 
 *.* @@{central_host}:{central_port}
 """
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
 
 def load_nodes():
     if os.path.exists(NODES_FILE):
