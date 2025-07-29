@@ -1,6 +1,7 @@
+import getpass
+import paramiko
 import json
 import os
-import paramiko
 
 NODES_FILE = "nodes.json"
 CENTRAL_HOST = "89.39.121.249"
@@ -30,38 +31,73 @@ def save_nodes(nodes):
     with open(NODES_FILE, "w") as f:
         json.dump(nodes, f, indent=2)
 
-def add_node():
-    host = input("IP ноды: ")
-    name = input("Название (уникальное): ")
-    ssh_key = input("Путь к SSH-ключу (по умолчанию ~/.ssh/id_rsa): ") or os.path.expanduser("~/.ssh/id_rsa")
+def connect_ssh(host, user, port, use_key, key_path=None, password=None):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        if use_key:
+            ssh.connect(hostname=host, port=port, username=user, key_filename=key_path, timeout=10)
+        else:
+            ssh.connect(hostname=host, port=port, username=user, password=password, timeout=10)
+        return ssh
+    except Exception as e:
+        print(f"❌ Ошибка подключения к {host}: {e}")
+        return None
 
-    node = {"host": host, "name": name, "ssh_key": ssh_key, "user": "root"}
+def add_node():
+    host = input("IP ноды: ").strip()
+    name = input("Название (уникальное): ").strip()
+    user = input("SSH пользователь (по умолчанию root): ").strip() or "root"
+    port_input = input("SSH порт (по умолчанию 22): ").strip()
+    port = int(port_input) if port_input else 22
+
+    auth_method = input("Аутентификация (1 - ключ, 2 - пароль): ").strip()
+    use_key = auth_method == "1"
+
+    if use_key:
+        key_path = input("Путь к SSH-ключу (по умолчанию ~/.ssh/id_rsa): ").strip()
+        if not key_path:
+            key_path = os.path.expanduser("~/.ssh/id_rsa")
+        password = None
+    else:
+        key_path = None
+        password = getpass.getpass("Введите SSH пароль: ")
+
+    ssh = connect_ssh(host, user, port, use_key, key_path, password)
+    if not ssh:
+        print("Не удалось подключиться. Попробуйте снова.")
+        return
 
     try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(host, username="root", key_filename=ssh_key)
-
-        # Установка rsyslog
+        print("📦 Проверяем и устанавливаем rsyslog...")
         ssh.exec_command("apt update && apt install -y rsyslog")
 
         conf = CONF_TEMPLATE.format(node=name, central_host=CENTRAL_HOST, central_port=CENTRAL_PORT)
-        path = f"/etc/rsyslog.d/30-xray-{name}.conf"
+        remote_path = f"/etc/rsyslog.d/30-xray-{name}.conf"
 
         sftp = ssh.open_sftp()
-        with sftp.file(path, "w") as f:
+        with sftp.file(remote_path, "w") as f:
             f.write(conf)
         sftp.close()
 
         ssh.exec_command("systemctl restart rsyslog")
-        print(f"✅ Нода {name} добавлена и настроена.")
+        print(f"✅ Нода {name} успешно добавлена и настроена.")
 
         nodes = load_nodes()
-        nodes.append(node)
+        nodes.append({
+            "host": host,
+            "name": name,
+            "user": user,
+            "port": port,
+            "auth_method": "key" if use_key else "password",
+            "key_path": key_path if use_key else None
+        })
         save_nodes(nodes)
 
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка настройки ноды: {e}")
+    finally:
+        ssh.close()
 
 def show_nodes():
     nodes = load_nodes()
@@ -69,14 +105,15 @@ def show_nodes():
         print("Нет добавленных нод.")
         return
     for i, n in enumerate(nodes, 1):
-        print(f"{i}. {n['name']} — {n['host']}")
+        auth = "ключ" if n.get("auth_method") == "key" else "пароль"
+        print(f"{i}. {n['name']} — {n['host']}:{n.get('port',22)} (пользователь {n.get('user','root')}, аутентификация: {auth})")
 
 def main():
     while True:
         print("\n=== Меню ===")
         print("1. Добавить ноду")
         print("2. Посмотреть список нод")
-        print("3. Выход")
+        print("3. Выйти")
         choice = input("Выбор: ").strip()
 
         if choice == "1":
