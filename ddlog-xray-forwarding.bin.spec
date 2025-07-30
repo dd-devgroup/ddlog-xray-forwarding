@@ -1,5 +1,3 @@
-# ddlog-xray-forwarding.bin.spec
-
 block_cipher = None
 
 a = Analysis(
@@ -8,6 +6,7 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
+        'encodings',  # Явно добавить
         'paramiko',
         'cryptography',
         'cryptography.hazmat.bindings._openssl',
@@ -37,7 +36,7 @@ a = Analysis(
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
-    noarchive=False,
+    noarchive=True,  # переключаем на True для избежания ошибок с encodings
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
@@ -45,8 +44,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,        # Включаем бинарники сюда
-    exclude_binaries=False,  # Обязательно False
+    a.binaries,
+    exclude_binaries=False,  # нужно включать бинарники в exe
     name='ddlog-xray-forwarding.bin',
     debug=False,
     bootloader_ignore_signals=False,
@@ -55,3 +54,13 @@ exe = EXE(
     console=True,
 )
 
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='ddlog-xray-forwarding.bin'
+)
