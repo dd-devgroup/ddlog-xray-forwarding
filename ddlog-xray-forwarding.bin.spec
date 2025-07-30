@@ -6,7 +6,7 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        'encodings',  # Явно добавить
+        'encodings',
         'paramiko',
         'cryptography',
         'cryptography.hazmat.bindings._openssl',
@@ -30,13 +30,8 @@ a = Analysis(
         'paramiko.sftp_handle',
         'paramiko.sftp_file',
     ],
-    hookspath=[],
-    runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
+    noarchive=True,
     cipher=block_cipher,
-    noarchive=True,  # переключаем на True для избежания ошибок с encodings
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
@@ -44,11 +39,10 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    exclude_binaries=False,  # нужно включать бинарники в exe
+    [],
+    exclude_binaries=True,  # ВАЖНО
     name='ddlog-xray-forwarding.bin',
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=True,
@@ -61,6 +55,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    name='ddlog-xray-forwarding.bin'
+    name='ddlog-xray-forwarding.bin',
 )
