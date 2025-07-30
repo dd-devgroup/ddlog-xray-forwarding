@@ -1,7 +1,5 @@
 # ddlog-xray-forwarding.bin.spec
 
-# -*- mode: python ; coding: utf-8 -*-
-
 block_cipher = None
 
 a = Analysis(
@@ -41,29 +39,19 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,
+    a.binaries,        # Включаем бинарники сюда
+    exclude_binaries=False,  # Обязательно False
     name='ddlog-xray-forwarding.bin',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=True,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='ddlog-xray-forwarding.bin'
 )
 
