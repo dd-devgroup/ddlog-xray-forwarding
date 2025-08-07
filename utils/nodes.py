@@ -44,22 +44,22 @@ class Node:
             return "tail -n +1 -f /var/log/remnanode/xray.out.log"
 
     def start_background_log_collection(self):
-    """Запускает фоновый поток, который пишет логи в файл."""
-    # Путь к логу, куда будем сохранять - точно такой же, как в системе
-    filename = "/var/log/xray.log"
-    if self.local:
-        proc = subprocess.Popen(
-            self.get_log_tail_command(),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        stream = proc.stdout
-    else:
-        if not self.connect_ssh():
-            return
-        _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
-    t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
-    t.start()
-    print(f"✅ Фоновый сбор логов запущен для узла '{self.name}' (сохраняется в {filename})")
+        """Запускает фоновый поток, который пишет логи в файл."""
+        # Путь к логу, куда будем сохранять - точно такой же, как в системе
+        filename = "/var/log/xray.log"
+        if self.local:
+            proc = subprocess.Popen(
+                self.get_log_tail_command(),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            stream = proc.stdout
+        else:
+            if not self.connect_ssh():
+                return
+            _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
+        t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
+        t.start()
+        print(f"✅ Фоновый сбор логов запущен для узла '{self.name}' (сохраняется в {filename})")
 
 
     def _stream_logs_and_save(self, stream, filename):
