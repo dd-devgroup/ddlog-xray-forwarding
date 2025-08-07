@@ -1,33 +1,46 @@
 on:
   push:
-    tags:
-      - 'v*' # Например, v1.0.0
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check last commit message
+        id: check_merge
+        run: |
+          echo "LAST_COMMIT_MSG=$(git log -1 --pretty=%B)" >> $GITHUB_ENV
+          echo "Last commit message: $LAST_COMMIT_MSG"
+
+      - name: Run only if merge from dev
+        if: contains(env.LAST_COMMIT_MSG, 'Merge branch \'dev\'')
+        run: echo "This is a merge from dev, continuing workflow..."
+
       - name: Set up Python
+        if: contains(env.LAST_COMMIT_MSG, 'Merge branch \'dev\'')
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
+        if: contains(env.LAST_COMMIT_MSG, 'Merge branch \'dev\'')
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r requirements.txt
 
       - name: Build binary
+        if: contains(env.LAST_COMMIT_MSG, 'Merge branch \'dev\'')
         run: |
           pyinstaller --onefile main.py
-          mv dist/main dist/ddlog-xray-forwarding  # задаем имя бинарника
+          mv dist/main dist/ddlog-xray-forwarding
 
       - name: Upload to GitHub Release
+        if: contains(env.LAST_COMMIT_MSG, 'Merge branch \'dev\'')
         uses: softprops/action-gh-release@v2
         with:
           name: ddlog-xray-forwarding ${{ github.ref_name }}
@@ -37,6 +50,7 @@ jobs:
           TOKEN: ${{ secrets.FG_PAT }}
 
       - name: Git tag and push
+        if: contains(env.LAST_COMMIT_MSG, 'Merge branch \'dev\'')
         env:
           TOKEN: ${{ secrets.FG_PAT }}
         run: |
