@@ -102,7 +102,7 @@ def load_nodes():
             for n in data:
                 node = Node(
                     name=n["name"],
-                    host=n.get("host"),
+                    host=n.get("host"),  
                     user=n.get("user"),
                     port=n.get("port", 22),
                     auth_method=n.get("auth_method"),
@@ -111,9 +111,8 @@ def load_nodes():
                 nodes.append(node)
             return nodes
     else:
-        # Добавим локальную ноду по умолчанию
-        local_node = Node(name="local")
-        return [local_node]
+        return []
+
 
 def save_nodes(nodes):
     import json
@@ -121,11 +120,9 @@ def save_nodes(nodes):
     NODES_FILE = "nodes.json"
     data = []
     for n in nodes:
-        if n.local:
-            continue
         data.append({
             "name": n.name,
-            "host": n.host,
+            "host": n.host, 
             "user": n.user,
             "port": n.port,
             "auth_method": n.auth_method,
@@ -133,6 +130,7 @@ def save_nodes(nodes):
         })
     with open(NODES_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
 
 def add_remote_node(nodes):
     host = input("IP ноды (оставьте пустым для локальной): ").strip()
