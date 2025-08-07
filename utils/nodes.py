@@ -66,7 +66,7 @@ class Node:
         try:
             with open(filename, "a", encoding="utf-8") as logfile:
                 for line in iter(stream.readline, ""):
-                    print(f"LOG LINE: {line.strip()}")
+                    print(f"{line.strip()}")
                     logfile.write(line)
                     logfile.flush()
         except Exception as e:
