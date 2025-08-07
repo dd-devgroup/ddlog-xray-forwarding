@@ -9,10 +9,16 @@ def setup_central_rsyslog():
     conf_path = "/etc/rsyslog.d/10-remote-xray.conf"
     conf_content = """
 module(load="imtcp")
-input(type="imtcp" port="514")
 
-if $syslogtag contains 'xray-' then /var/log/xray.log
-& stop
+input(type="imtcp" port="514" ruleset="xray-logs")
+
+ruleset(name="xray-logs") {
+    if ($syslogtag contains "xray-") then {
+        action(type="omfile" file="/var/log/xray.log" flushOnTXEnd="on")
+        stop
+    }
+}
+
 """
 
     try:
@@ -36,14 +42,14 @@ def setup_remote_rsyslog(node, central_host):
 module(load="imfile")
 
 input(type="imfile"
-    File="/var/log/supervisor/xray.out.log"
-    Tag="xray-{node.name}"
-    Severity="info"
-    Facility="local7"
-    PersistStateInterval="200"
-    PollingInterval="1")
+      File="/var/log/remnanode/xray.out.log"
+      Tag="xray-node-1"
+      Severity="info"
+      Facility="local7"
+      PersistStateInterval="200"
+      PollingInterval="1")
 
-*.* @@{central_host}:514
+*.* @@central-server-hostname:514
 """
 
     remote_path = f"/etc/rsyslog.d/30-xray-{node.name}.conf"
