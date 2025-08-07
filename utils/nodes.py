@@ -1,24 +1,11 @@
 import subprocess
+import threading
 import getpass
 import paramiko
-import threading
 import os
-import json
-import socket
-import sys
 
-NODES_FILE = "nodes.json"
-
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = "127.0.0.1"
-    finally:
-        s.close()
-    return ip
+from utils.utils import get_local_ip
+from utils.rsyslog_setup import setup_remote_rsyslog
 
 class Node:
     def __init__(self, name, host=None, user=None, port=22, auth_method=None, key_path=None):
@@ -26,16 +13,14 @@ class Node:
         self.host = host  # None для локальной ноды
         self.user = user
         self.port = port
-        self.auth_method = auth_method  # "key" или "password" или None (для локальной)
+        self.auth_method = auth_method
         self.key_path = key_path
         self.password = None
         self.ssh = None
         self.local = host is None
 
     def connect_ssh(self):
-        if self.local:
-            return True
-        if self.ssh:
+        if self.local or self.ssh:
             return True
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -100,6 +85,9 @@ class Node:
             print(f"Ошибка при просмотре логов узла '{self.name}': {e}")
 
 def load_nodes():
+    import json
+
+    NODES_FILE = "nodes.json"
     if os.path.exists(NODES_FILE):
         with open(NODES_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -121,10 +109,12 @@ def load_nodes():
         return [local_node]
 
 def save_nodes(nodes):
+    import json
+
+    NODES_FILE = "nodes.json"
     data = []
     for n in nodes:
         if n.local:
-            # Не сохраняем локальную ноду в файл (или можно, если хотите)
             continue
         data.append({
             "name": n.name,
@@ -144,106 +134,28 @@ def add_remote_node(nodes):
         print("Нода с таким именем уже есть.")
         return
     user = input("SSH пользователь (по умолчанию root): ").strip() or "root"
-    port_input = input("SSH порт (по умолчанию 22): ").strip()
-    port = int(port_input) if port_input else 22
+    port = int(input("SSH порт (по умолчанию 22): ").strip() or "22")
 
     auth_method = input("Аутентификация (1 - ключ, 2 - пароль): ").strip()
     use_key = auth_method == "1"
 
+    key_path = None
+    password = None
     if use_key:
-        key_path = input("Путь к SSH-ключу (по умолчанию ~/.ssh/id_rsa): ").strip()
-        if not key_path:
-            key_path = os.path.expanduser("~/.ssh/id_rsa")
-        password = None
+        key_path = input("Путь к SSH-ключу (по умолчанию ~/.ssh/id_rsa): ").strip() or os.path.expanduser("~/.ssh/id_rsa")
     else:
-        key_path = None
         password = getpass.getpass("Введите SSH пароль: ")
 
     node = Node(name=name, host=host, user=user, port=port,
                 auth_method="key" if use_key else "password", key_path=key_path)
     if not node.connect_ssh():
-        print("Не удалось подключиться к удалённой ноде. Проверьте данные.")
+        print("Не удалось подключиться к удалённой ноде.")
         return
 
-    # Настройка rsyslog (можно при необходимости)
     try:
-        print("Установка rsyslog и настройка конфигурации на удалённой ноде...")
-        stdin, stdout, stderr = node.ssh.exec_command("apt update && apt install -y rsyslog")
-        stdout.channel.recv_exit_status()
-
-        CENTRAL_HOST = get_local_ip()
-        CENTRAL_PORT = 514
-        CONF_TEMPLATE = f"""
-module(load="imfile")
-
-input(type="imfile"
-      File="/var/log/supervisor/xray.out.log"
-      Tag="xray-{name}"
-      Severity="info"
-      Facility="local7"
-      PersistStateInterval="200"
-      PollingInterval="1")
-
-*.* @@{CENTRAL_HOST}:{CENTRAL_PORT}
-"""
-        remote_path = f"/etc/rsyslog.d/30-xray-{name}.conf"
-        sftp = node.ssh.open_sftp()
-        with sftp.file(remote_path, "w") as f:
-            f.write(CONF_TEMPLATE)
-        sftp.close()
-
-        node.ssh.exec_command("systemctl restart rsyslog")
-        print(f"✅ Нода {name} успешно настроена.")
+        setup_remote_rsyslog(node, get_local_ip())
+        print(f"✅ rsyslog настроен для {name}.")
     except Exception as e:
-        print(f"Ошибка настройки rsyslog: {e}")
+        print(f"❌ Ошибка при настройке rsyslog: {e}")
 
     nodes.append(node)
-    save_nodes(nodes)
-    node.start_background_log_collection()
-
-def show_nodes(nodes):
-    if not nodes:
-        print("Нет добавленных нод.")
-        return
-    for i, n in enumerate(nodes, 1):
-        typ = "локальная" if n.local else f"удалённая ({n.host})"
-        print(f"{i}. {n.name} — {typ}")
-
-def main():
-    nodes = load_nodes()
-
-    # Запускаем фоновый сбор логов для всех нод (локальной и удалённых)
-    for node in nodes:
-        node.start_background_log_collection()
-
-    while True:
-        print("\n=== Главное меню ===")
-        print("1. Добавить удалённую ноду")
-        print("2. Посмотреть список нод")
-        print("3. Просмотр логов ноды в реальном времени")
-        print("4. Выход")
-        choice = input("Выбор: ").strip()
-
-        if choice == "1":
-            add_remote_node(nodes)
-        elif choice == "2":
-            show_nodes(nodes)
-        elif choice == "3":
-            if not nodes:
-                print("Нет нод для просмотра.")
-                continue
-            show_nodes(nodes)
-            sel = input("Выберите номер ноды для просмотра логов: ").strip()
-            if not sel.isdigit() or int(sel) < 1 or int(sel) > len(nodes):
-                print("Некорректный выбор.")
-                continue
-            node = nodes[int(sel) - 1]
-            node.tail_logs_realtime()
-        elif choice == "4":
-            print("Выход...")
-            sys.exit(0)
-        else:
-            print("Некорректный выбор.")
-
-if __name__ == "__main__":
-    main()
