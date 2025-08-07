@@ -36,4 +36,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: dist/ddlog-xray-forwarding
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.FG_PAT }}
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "bot@example.com"
+          git tag v1.0.0
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }} --tags
