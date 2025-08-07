@@ -39,7 +39,7 @@ class Node:
     def get_log_tail_command(self):
         # Для локальной ноды команда — просто tail по пути файла
         if self.local:
-            return ["tail", "-n", "+1", "-f", "/var/log/remnanode/xray.out.log"]
+            return ["stdbuf", "-oL", "tail", "-n", "+1", "-f", "/var/log/remnanode/xray.out.log"]
         else:
             return "tail -n +1 -f /var/log/remnanode/xray.out.log"
 
@@ -66,10 +66,12 @@ class Node:
         try:
             with open(filename, "a", encoding="utf-8") as logfile:
                 for line in iter(stream.readline, ""):
+                    print(f"LOG LINE: {line.strip()}")
                     logfile.write(line)
                     logfile.flush()
         except Exception as e:
             print(f"Ошибка в потоке логов узла '{self.name}': {e}")
+
 
     def tail_logs_realtime(self):
         """Показывает логи в реальном времени в консоли (без сохранения)."""
