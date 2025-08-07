@@ -1,5 +1,3 @@
-name: Build and Release ddlog-xray-forwarding
-
 on:
   push:
     tags:
@@ -35,6 +33,10 @@ jobs:
           name: ddlog-xray-forwarding ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           files: dist/ddlog-xray-forwarding
+        env:
+          TOKEN: ${{ secrets.FG_PAT }}
+
+      - name: Git tag and push
         env:
           TOKEN: ${{ secrets.FG_PAT }}
         run: |
