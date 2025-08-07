@@ -36,19 +36,26 @@ class Node:
             print(f"❌ Ошибка подключения к {self.host}: {e}")
             return False
 
+    def get_log_tail_command(self):
+        # Для локальной ноды команда — просто tail по пути файла
+        if self.local:
+            return ["tail", "-n", "+1", "-f", "/var/log/remnanode/xray.out.log"]
+        else:
+            return "tail -n +1 -f /var/log/remnanode/xray.out.log"
+
     def start_background_log_collection(self):
         """Запускает фоновый поток, который пишет логи в файл."""
         filename = f"logs_xray_{self.name}.log"
         if self.local:
             proc = subprocess.Popen(
-                ["docker", "exec", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"],
+                self.get_log_tail_command(),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
             stream = proc.stdout
         else:
             if not self.connect_ssh():
                 return
-            _, stream, _ = self.ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
+            _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
         t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
         t.start()
         print(f"✅ Фоновый сбор логов запущен для узла '{self.name}' (сохраняется в {filename})")
@@ -66,14 +73,14 @@ class Node:
         """Показывает логи в реальном времени в консоли (без сохранения)."""
         if self.local:
             proc = subprocess.Popen(
-                ["docker", "exec", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"],
+                self.get_log_tail_command(),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
             stream = proc.stdout
         else:
             if not self.connect_ssh():
                 return
-            _, stream, _ = self.ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
+            _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
 
         print(f"--- Просмотр логов узла '{self.name}' (нажмите Ctrl+C для выхода) ---")
         try:
@@ -128,11 +135,19 @@ def save_nodes(nodes):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 def add_remote_node(nodes):
-    host = input("IP ноды: ").strip()
+    host = input("IP ноды (оставьте пустым для локальной): ").strip()
     name = input("Название (уникальное): ").strip()
     if any(n.name == name for n in nodes):
         print("Нода с таким именем уже есть.")
         return
+
+    if not host:
+        # Создаем локальную ноду
+        node = Node(name=name)
+        nodes.append(node)
+        print(f"✅ Локальная нода '{name}' добавлена.")
+        return
+
     user = input("SSH пользователь (по умолчанию root): ").strip() or "root"
     port = int(input("SSH порт (по умолчанию 22): ").strip() or "22")
 
@@ -159,3 +174,4 @@ def add_remote_node(nodes):
         print(f"❌ Ошибка при настройке rsyslog: {e}")
 
     nodes.append(node)
+
