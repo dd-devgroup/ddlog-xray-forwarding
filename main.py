@@ -6,6 +6,8 @@ def main():
     setup_central_rsyslog()
 
     nodes = load_nodes()
+    for node in nodes:
+        node.start_background_log_collection()
 
     while True:
         print("\n=== Главное меню ===")
@@ -38,6 +40,3 @@ def main():
             sys.exit(0)
         else:
             print("Некорректный выбор.")
-
-if __name__ == "__main__":
-    main()
