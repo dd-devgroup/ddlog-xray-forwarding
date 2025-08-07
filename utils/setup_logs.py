@@ -6,15 +6,28 @@ import os
 import json
 import socket
 import sys
+import logging
+import time
 
 NODES_FILE = "nodes.json"
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler("nodes_manager.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
-    except Exception:
+    except Exception as e:
+        logging.warning(f"Не удалось определить локальный IP, fallback на 127.0.0.1: {e}")
         ip = "127.0.0.1"
     finally:
         s.close()
@@ -31,55 +44,142 @@ class Node:
         self.password = None
         self.ssh = None
         self.local = host is None
+        self._stop_event = threading.Event()
+        self._log_thread = None
 
     def connect_ssh(self):
         if self.local:
             return True
-        if self.ssh:
+        if self.ssh and self.ssh.get_transport() and self.ssh.get_transport().is_active():
             return True
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
             if self.auth_method == "key":
-                self.ssh.connect(self.host, port=self.port, username=self.user, key_filename=self.key_path, timeout=10)
+                if not self.key_path or not os.path.isfile(os.path.expanduser(self.key_path)):
+                    logging.error(f"SSH ключ не найден: {self.key_path}")
+                    return False
+                self.ssh.connect(
+                    self.host,
+                    port=self.port,
+                    username=self.user,
+                    key_filename=os.path.expanduser(self.key_path),
+                    timeout=10,
+                    banner_timeout=10,
+                    auth_timeout=10,
+                )
             else:
                 if self.password is None:
-                    self.password = getpass.getpass(f"Введите SSH пароль для {self.user}@{self.host}: ")
-                self.ssh.connect(self.host, port=self.port, username=self.user, password=self.password, timeout=10)
+                    try:
+                        self.password = getpass.getpass(f"Введите SSH пароль для {self.user}@{self.host}: ")
+                    except Exception as e:
+                        logging.error(f"Ошибка при вводе пароля: {e}")
+                        return False
+                self.ssh.connect(
+                    self.host,
+                    port=self.port,
+                    username=self.user,
+                    password=self.password,
+                    timeout=10,
+                    banner_timeout=10,
+                    auth_timeout=10,
+                )
+            logging.info(f"Успешное подключение к {self.host}")
             return True
+        except paramiko.AuthenticationException:
+            logging.error(f"Ошибка аутентификации для {self.host}")
+        except paramiko.SSHException as e:
+            logging.error(f"SSH ошибка при подключении к {self.host}: {e}")
+        except socket.timeout:
+            logging.error(f"Таймаут подключения к {self.host}")
         except Exception as e:
-            print(f"❌ Ошибка подключения к {self.host}: {e}")
+            logging.error(f"Неизвестная ошибка подключения к {self.host}: {e}")
+        return False
+
+    def _check_docker_container(self, container_name="remnanode"):
+        """Проверяем, что локально есть docker и запущен контейнер remnanode."""
+        try:
+            subprocess.run(["docker", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logging.error("Docker не установлен или недоступен локально.")
+            return False
+
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            containers = result.stdout.strip().splitlines()
+            if container_name not in containers:
+                logging.error(f"Контейнер '{container_name}' не запущен локально.")
+                return False
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Ошибка при проверке контейнеров Docker: {e}")
             return False
 
     def start_background_log_collection(self):
         """Запускает фоновый поток, который пишет логи в файл."""
         filename = f"logs_xray_{self.name}.log"
+        if self._log_thread and self._log_thread.is_alive():
+            logging.info(f"Фоновый сбор логов для узла '{self.name}' уже запущен.")
+            return
         if self.local:
+            if not self._check_docker_container():
+                logging.error("Невозможно собрать логи локально — Docker контейнер не доступен.")
+                return
             proc = subprocess.Popen(
                 ["docker", "exec", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
             stream = proc.stdout
+            # Можно добавить хранение proc, чтобы завершать позже, если нужно
         else:
             if not self.connect_ssh():
                 return
-            _, stream, _ = self.ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
-        t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
-        t.start()
-        print(f"✅ Фоновый сбор логов запущен для узла '{self.name}' (сохраняется в {filename})")
+            try:
+                _, stream, _ = self.ssh.exec_command(
+                    "tail -n +1 -f /var/log/supervisor/xray.out.log",
+                    timeout=3600
+                )
+            except Exception as e:
+                logging.error(f"Ошибка запуска команды tail на {self.host}: {e}")
+                return
+
+        self._stop_event.clear()
+        self._log_thread = threading.Thread(
+            target=self._stream_logs_and_save, args=(stream, filename), daemon=True
+        )
+        self._log_thread.start()
+        logging.info(f"Фоновый сбор логов запущен для узла '{self.name}', сохраняется в {filename}")
+
+    def stop_background_log_collection(self):
+        """Попытка остановить поток сбора логов (не гарантированно, зависит от реализации)."""
+        if self._log_thread and self._log_thread.is_alive():
+            logging.info(f"Остановка фонового сбора логов для узла '{self.name}'")
+            self._stop_event.set()
+            self._log_thread.join(timeout=5)
 
     def _stream_logs_and_save(self, stream, filename):
         try:
             with open(filename, "a", encoding="utf-8") as logfile:
-                for line in iter(stream.readline, ""):
+                while not self._stop_event.is_set():
+                    line = stream.readline()
+                    if not line:
+                        # Поток закончился или соединение прервано
+                        time.sleep(0.5)
+                        continue
                     logfile.write(line)
                     logfile.flush()
         except Exception as e:
-            print(f"Ошибка в потоке логов узла '{self.name}': {e}")
+            logging.error(f"Ошибка в потоке логов узла '{self.name}': {e}")
 
     def tail_logs_realtime(self):
         """Показывает логи в реальном времени в консоли (без сохранения)."""
         if self.local:
+            if not self._check_docker_container():
+                logging.error("Невозможно просмотреть логи локально — Docker контейнер не доступен.")
+                return
             proc = subprocess.Popen(
                 ["docker", "exec", "remnanode", "tail", "-n", "+1", "-f", "/var/log/supervisor/xray.out.log"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -88,33 +188,47 @@ class Node:
         else:
             if not self.connect_ssh():
                 return
-            _, stream, _ = self.ssh.exec_command("tail -n +1 -f /var/log/supervisor/xray.out.log")
+            try:
+                _, stream, _ = self.ssh.exec_command(
+                    "tail -n +1 -f /var/log/supervisor/xray.out.log",
+                    timeout=3600
+                )
+            except Exception as e:
+                logging.error(f"Ошибка запуска команды tail на {self.host}: {e}")
+                return
 
-        print(f"--- Просмотр логов узла '{self.name}' (нажмите Ctrl+C для выхода) ---")
+        logging.info(f"--- Просмотр логов узла '{self.name}' (Ctrl+C для выхода) ---")
         try:
             for line in iter(stream.readline, ""):
+                if not line:
+                    time.sleep(0.5)
+                    continue
                 print(line, end="")
         except KeyboardInterrupt:
-            print("\nВыход из просмотра логов.")
+            logging.info("Выход из просмотра логов.")
         except Exception as e:
-            print(f"Ошибка при просмотре логов узла '{self.name}': {e}")
+            logging.error(f"Ошибка при просмотре логов узла '{self.name}': {e}")
 
 def load_nodes():
     if os.path.exists(NODES_FILE):
-        with open(NODES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            nodes = []
-            for n in data:
-                node = Node(
-                    name=n["name"],
-                    host=n.get("host"),
-                    user=n.get("user"),
-                    port=n.get("port", 22),
-                    auth_method=n.get("auth_method"),
-                    key_path=n.get("key_path"),
-                )
-                nodes.append(node)
-            return nodes
+        try:
+            with open(NODES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                nodes = []
+                for n in data:
+                    node = Node(
+                        name=n["name"],
+                        host=n.get("host"),
+                        user=n.get("user"),
+                        port=n.get("port", 22),
+                        auth_method=n.get("auth_method"),
+                        key_path=n.get("key_path"),
+                    )
+                    nodes.append(node)
+                return nodes
+        except (json.JSONDecodeError, IOError) as e:
+            logging.error(f"Ошибка загрузки файла {NODES_FILE}: {e}")
+            return []
     else:
         # Добавим локальную ноду по умолчанию
         local_node = Node(name="local")
@@ -124,7 +238,6 @@ def save_nodes(nodes):
     data = []
     for n in nodes:
         if n.local:
-            # Не сохраняем локальную ноду в файл (или можно, если хотите)
             continue
         data.append({
             "name": n.name,
@@ -134,18 +247,25 @@ def save_nodes(nodes):
             "auth_method": n.auth_method,
             "key_path": n.key_path,
         })
-    with open(NODES_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        with open(NODES_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except IOError as e:
+        logging.error(f"Ошибка сохранения файла {NODES_FILE}: {e}")
 
 def add_remote_node(nodes):
     host = input("IP ноды: ").strip()
     name = input("Название (уникальное): ").strip()
     if any(n.name == name for n in nodes):
-        print("Нода с таким именем уже есть.")
+        logging.warning("Нода с таким именем уже есть.")
         return
     user = input("SSH пользователь (по умолчанию root): ").strip() or "root"
     port_input = input("SSH порт (по умолчанию 22): ").strip()
-    port = int(port_input) if port_input else 22
+    try:
+        port = int(port_input) if port_input else 22
+    except ValueError:
+        logging.warning("Некорректный номер порта. Используется 22.")
+        port = 22
 
     auth_method = input("Аутентификация (1 - ключ, 2 - пароль): ").strip()
     use_key = auth_method == "1"
@@ -157,19 +277,27 @@ def add_remote_node(nodes):
         password = None
     else:
         key_path = None
-        password = getpass.getpass("Введите SSH пароль: ")
+        try:
+            password = getpass.getpass("Введите SSH пароль: ")
+        except Exception as e:
+            logging.error(f"Ошибка при вводе пароля: {e}")
+            return
 
     node = Node(name=name, host=host, user=user, port=port,
                 auth_method="key" if use_key else "password", key_path=key_path)
     if not node.connect_ssh():
-        print("Не удалось подключиться к удалённой ноде. Проверьте данные.")
+        logging.error("Не удалось подключиться к удалённой ноде. Проверьте данные.")
         return
 
-    # Настройка rsyslog (можно при необходимости)
+    # Настройка rsyslog
     try:
-        print("Установка rsyslog и настройка конфигурации на удалённой ноде...")
+        logging.info("Установка rsyslog и настройка конфигурации на удалённой ноде...")
         stdin, stdout, stderr = node.ssh.exec_command("apt update && apt install -y rsyslog")
-        stdout.channel.recv_exit_status()
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            err = stderr.read().decode()
+            logging.error(f"Ошибка установки rsyslog: {err}")
+            return
 
         CENTRAL_HOST = get_local_ip()
         CENTRAL_PORT = 514
@@ -187,63 +315,71 @@ input(type="imfile"
 *.* @@{CENTRAL_HOST}:{CENTRAL_PORT}
 """
         remote_path = f"/etc/rsyslog.d/30-xray-{name}.conf"
-        sftp = node.ssh.open_sftp()
-        with sftp.file(remote_path, "w") as f:
-            f.write(CONF_TEMPLATE)
-        sftp.close()
 
-        node.ssh.exec_command("systemctl restart rsyslog")
-        print(f"✅ Нода {name} успешно настроена.")
+        try:
+            sftp = node.ssh.open_sftp()
+            with sftp.file(remote_path, "w") as f:
+                f.write(CONF_TEMPLATE)
+            sftp.close()
+        except IOError as e:
+            logging.error(f"Ошибка записи конфигурации rsyslog (нужны root-права?): {e}")
+            return
+
+        stdin, stdout, stderr = node.ssh.exec_command("systemctl restart rsyslog")
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            err = stderr.read().decode()
+            logging.error(f"Ошибка перезапуска rsyslog: {err}")
+            return
+
+        logging.info(f"Нода {name} успешно настроена.")
     except Exception as e:
-        print(f"Ошибка настройки rsyslog: {e}")
+        logging.error(f"Ошибка при настройке rsyslog на ноде {name}: {e}")
+        return
 
     nodes.append(node)
     save_nodes(nodes)
-    node.start_background_log_collection()
-
-def show_nodes(nodes):
-    if not nodes:
-        print("Нет добавленных нод.")
-        return
-    for i, n in enumerate(nodes, 1):
-        typ = "локальная" if n.local else f"удалённая ({n.host})"
-        print(f"{i}. {n.name} — {typ}")
 
 def main():
     nodes = load_nodes()
 
-    # Запускаем фоновый сбор логов для всех нод (локальной и удалённых)
-    for node in nodes:
-        node.start_background_log_collection()
-
     while True:
-        print("\n=== Главное меню ===")
-        print("1. Добавить удалённую ноду")
-        print("2. Посмотреть список нод")
-        print("3. Просмотр логов ноды в реальном времени")
-        print("4. Выход")
-        choice = input("Выбор: ").strip()
-
-        if choice == "1":
+        print("\n== Менеджер нод ==")
+        for idx, n in enumerate(nodes, 1):
+            print(f"{idx}. {n.name} (локальная)" if n.local else f"{idx}. {n.name} ({n.host})")
+        print("a - Добавить удалённую ноду")
+        print("q - Выход")
+        choice = input("Выберите действие: ").strip().lower()
+        if choice == "q":
+            logging.info("Выход из программы.")
+            # Остановка всех фоновых потоков
+            for n in nodes:
+                n.stop_background_log_collection()
+            break
+        elif choice == "a":
             add_remote_node(nodes)
-        elif choice == "2":
-            show_nodes(nodes)
-        elif choice == "3":
-            if not nodes:
-                print("Нет нод для просмотра.")
-                continue
-            show_nodes(nodes)
-            sel = input("Выберите номер ноды для просмотра логов: ").strip()
-            if not sel.isdigit() or int(sel) < 1 or int(sel) > len(nodes):
-                print("Некорректный выбор.")
-                continue
-            node = nodes[int(sel) - 1]
-            node.tail_logs_realtime()
-        elif choice == "4":
-            print("Выход...")
-            sys.exit(0)
         else:
-            print("Некорректный выбор.")
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(nodes):
+                    node = nodes[idx]
+                    print(f"Выбрана нода '{node.name}'")
+                    print("1. Просмотреть логи в реальном времени")
+                    print("2. Запустить фоновый сбор логов с записью в файл")
+                    print("3. Остановить фоновый сбор логов")
+                    action = input("Выберите действие: ").strip()
+                    if action == "1":
+                        node.tail_logs_realtime()
+                    elif action == "2":
+                        node.start_background_log_collection()
+                    elif action == "3":
+                        node.stop_background_log_collection()
+                    else:
+                        logging.warning("Неверное действие.")
+                else:
+                    logging.warning("Неверный номер ноды.")
+            except ValueError:
+                logging.warning("Неверный ввод.")
 
 if __name__ == "__main__":
     main()
