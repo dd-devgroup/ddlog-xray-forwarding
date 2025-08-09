@@ -6,7 +6,7 @@ import os
 import json
 import shlex
 from datetime import datetime
-from utils.utils import get_local_ip, convert_old_xray_log_to_json
+from utils.utils import get_public_ip, convert_old_xray_log_to_json
 from utils.rsyslog_setup import remove_rsyslog_config, remove_ufw_rules, setup_remote_rsyslog
 
 class Node:
