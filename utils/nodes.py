@@ -190,7 +190,7 @@ def add_node(nodes):
         node = Node(name=name, host=host, user=user, port=port, auth_method=auth_method, key_path=key_path)
         if node.connect_ssh():
             print("Настройка rsyslog на удалённой ноде...")
-             setup_remote_rsyslog(node, central_server_ip)
+            setup_remote_rsyslog(node, central_server_ip)
             node.start_background_log_collection()
             nodes.append(node)
             print(f"✅ Удалённая нода '{name}' добавлена и настроена.")
