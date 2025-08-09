@@ -147,31 +147,46 @@ def save_nodes(nodes):
             "key_path": n.key_path
         } for n in nodes], f, ensure_ascii=False, indent=2)
 
-def add_remote_node(nodes):
-    print("Добавление удалённой ноды:")
-    name = input("Имя ноды: ").strip()
-    host = input("IP или hostname: ").strip()
-    user = input("Пользователь SSH: ").strip()
-    port_str = input("Порт SSH (по умолчанию 22): ").strip()
-    port = int(port_str) if port_str.isdigit() else 22
-    print("Выберите метод аутентификации:\n1) SSH key\n2) Пароль")
-    auth_choice = input("Выбор (1/2): ").strip()
-    if auth_choice == "1":
-        auth_method = "key"
-        key_path = input("Путь к SSH private key (например ~/.ssh/id_rsa): ").strip()
-    else:
-        auth_method = "password"
-        key_path = None
+def add_node(nodes):
+    print("Добавление ноды:")
+    node_type = input("Выберите тип ноды:\n1) Локальная\n2) Удалённая\nВыбор (1/2): ").strip()
 
-    node = Node(name=name, host=host, user=user, port=port, auth_method=auth_method, key_path=key_path)
-    if node.connect_ssh():
-        print("Настройка rsyslog на удалённой ноде...")
-        setup_remote_rsyslog(node)
+    if node_type == "1":
+        # Локальная нода - хост, пользователь, ssh не нужны
+        name = input("Имя локальной ноды: ").strip()
+        node = Node(name=name)  # host=None значит локальная
+        node.convert_old_log_to_json()  # если нужно сразу конвертировать логи локальной ноды
         node.start_background_log_collection()
         nodes.append(node)
-        print(f"✅ Нода '{name}' добавлена и настроена.")
+        print(f"✅ Локальная нода '{name}' добавлена и настроена.")
+    elif node_type == "2":
+        # Добавляем удалённую ноду
+        name = input("Имя ноды: ").strip()
+        host = input("IP или hostname: ").strip()
+        user = input("Пользователь SSH: ").strip()
+        port_str = input("Порт SSH (по умолчанию 22): ").strip()
+        port = int(port_str) if port_str.isdigit() else 22
+        print("Выберите метод аутентификации:\n1) SSH key\n2) Пароль")
+        auth_choice = input("Выбор (1/2): ").strip()
+        if auth_choice == "1":
+            auth_method = "key"
+            key_path = input("Путь к SSH private key (например ~/.ssh/id_rsa): ").strip()
+        else:
+            auth_method = "password"
+            key_path = None
+
+        node = Node(name=name, host=host, user=user, port=port, auth_method=auth_method, key_path=key_path)
+        if node.connect_ssh():
+            print("Настройка rsyslog на удалённой ноде...")
+            setup_remote_rsyslog(node)
+            node.start_background_log_collection()
+            nodes.append(node)
+            print(f"✅ Удалённая нода '{name}' добавлена и настроена.")
+        else:
+            print("❌ Не удалось подключиться и настроить ноду.")
     else:
-        print("❌ Не удалось подключиться и настроить ноду.")
+        print("❌ Некорректный выбор, нода не добавлена.")
+
 
 def remove_remote_node(node):
     print(f"Удаляем конфиг rsyslog и удаляем ноду {node.name}...")

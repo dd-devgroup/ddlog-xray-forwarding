@@ -36,7 +36,7 @@ def main():
 
         while True:
             console.print("\n[bold magenta]=== Главное меню ===[/bold magenta]")
-            console.print("1. Добавить удалённую ноду")
+            console.print("1. Добавить ноду")
             console.print("2. Посмотреть список нод")
             console.print("3. Просмотр логов ноды в реальном времени")
             console.print("4. Удалить ноду")
@@ -44,7 +44,7 @@ def main():
             choice = input("Выбор: ").strip()
 
             if choice == "1":
-                add_remote_node(nodes)
+                add_node(nodes)
                 save_nodes(nodes)
             elif choice == "2":
                 if not nodes:
