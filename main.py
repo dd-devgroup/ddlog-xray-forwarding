@@ -5,9 +5,10 @@ from utils.nodes import (
     add_node,
     remove_remote_node,
 )
-from utils.rsyslog_setup import setup_central_rsyslog
+from utils.rsyslog_setup import setup_central_rsyslog 
 from rich.console import Console
 from rich.table import Table
+from utils.utils import get_public_ip
 
 console = Console()
 
@@ -23,6 +24,7 @@ def show_nodes(nodes):
 
 def main():
     try:
+        
         console.print("[bold cyan]Запускаем setup_central_rsyslog()...[/bold cyan]")
         setup_central_rsyslog()
 
@@ -30,9 +32,12 @@ def main():
         nodes = load_nodes()
         console.print(f"[bold green]Загружено нод:[/bold green] {len(nodes)}")
 
+        central_server_ip = get_public_ip()
+        console.print(f"Central server IP: '{central_server_ip}'")
+
         for node in nodes:
             console.print(f"[bold yellow]Запускаем фоновый сбор логов:[/bold yellow] {node.name}")
-            node.start_background_log_collection()
+            node.start_background_log_collection(central_server_ip)
 
         while True:
             console.print("\n[bold magenta]=== Главное меню ===[/bold magenta]")
@@ -44,7 +49,7 @@ def main():
             choice = input("Выбор: ").strip()
 
             if choice == "1":
-                add_node(nodes)
+                add_node(nodes, central_server_ip)
                 save_nodes(nodes)
             elif choice == "2":
                 if not nodes:
@@ -71,7 +76,7 @@ def main():
                     node = nodes[int(sel) - 1]
                     confirm = input(f"Точно удалить {node.name}? (y/N): ").strip().lower()
                     if confirm == "y":
-                        remove_remote_node(node)
+                        remove_remote_node(node, central_server_ip)
                         nodes.pop(int(sel) - 1)
                         save_nodes(nodes)
                         console.print(f"[green]✅ Нода '{node.name}' удалена.[/green]")

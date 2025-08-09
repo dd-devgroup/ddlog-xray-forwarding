@@ -55,20 +55,26 @@ class Node:
         subprocess.Popen(shlex.split(cmd))
         print(f"✅ Локальный tail запущен в фоне для '{self.name}' → {filename}")
 
-    def start_remote_log_forwarding(self):
+    def start_remote_log_forwarding(self, central_server_ip):
         """Для удалённой ноды настраиваем rsyslog + запускаем форвардер."""
         if not self.connect_ssh():
             return
         print(f"Настройка rsyslog для удалённой ноды {self.name} ({self.host})...")
-        setup_remote_rsyslog(self)
+        # ЯВНО передаём central_server_ip дальше
+        setup_remote_rsyslog(self, central_server_ip)
         print(f"Запуск бинарника форвардера...")
         self.run_remote_binary()
 
-    def start_background_log_collection(self):
+    def start_background_log_collection(self, central_server_ip=None):
         if self.local:
             self.start_local_tail_in_background()
         else:
-            self.start_remote_log_forwarding()
+            # при загрузке/добавлении ноды обязательно передавайте central_server_ip
+            if central_server_ip is None:
+                # на случай, если вызвали без параметра — предупредим, но не ломаем
+                print(f"[WARN] central_server_ip не передан для ноды {self.name}, пропускаем настройку rsyslog.")
+                return
+            self.start_remote_log_forwarding(central_server_ip)
 
     def run_remote_binary(self, bin_path="/usr/local/bin/ddlog-xray-forwarding.bin"):
         if not self.connect_ssh():
@@ -159,16 +165,15 @@ def save_nodes(nodes):
             "key_path": n.key_path
         } for n in nodes], f, ensure_ascii=False, indent=2)
 
-def add_node(nodes):
+def add_node(nodes, central_server_ip):
     print("Добавление ноды:")
     node_type = input("Выберите тип ноды:\n1) Локальная\n2) Удалённая\nВыбор (1/2): ").strip()
 
     if node_type == "1":
-        # Локальная нода - хост, пользователь, ssh не нужны
         name = input("Имя локальной ноды: ").strip()
-        node = Node(name=name)  # host=None значит локальная
-        node.convert_old_log_to_json()  # если нужно сразу конвертировать логи локальной ноды
-        node.start_background_log_collection()
+        node = Node(name=name)
+        node.convert_old_log_to_json() 
+        node.start_background_log_collection(central_server_ip) 
         nodes.append(node)
         print(f"✅ Локальная нода '{name}' добавлена и настроена.")
     elif node_type == "2":

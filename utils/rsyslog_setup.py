@@ -41,6 +41,7 @@ def setup_remote_rsyslog(node, central_server_ip=None):
     Настройка rsyslog на удалённой ноде для отправки логов на центральный сервер.
     central_server_ip - IP или hostname центрального rsyslog.
     """
+    print(f"[DEBUG] setup_remote_rsyslog: central_server_ip = '{central_server_ip}'")
     if central_server_ip is None:
         print("❌ Не указан IP центрального сервера для rsyslog.")
         return
