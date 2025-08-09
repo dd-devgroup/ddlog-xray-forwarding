@@ -1,19 +1,15 @@
 import socket
 import os
 import json
+import requests
 
-def get_local_ip():
-    """
-    Получить локальный IP-адрес, используемый по умолчанию.
-    """
+def get_public_ip():
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        response = requests.get('https://api.ipify.org')
+        response.raise_for_status()
+        return response.text.strip()
     except Exception as e:
-        print(f"Ошибка получения локального IP: {e}")
+        print(f"Ошибка получения публичного IP: {e}")
         return "127.0.0.1"
 
 def convert_old_xray_log_to_json(log_path, json_path):
