@@ -2,7 +2,7 @@ import sys
 from utils.nodes import (
     load_nodes,
     save_nodes,
-    add_remote_node,
+    add_node,
     remove_remote_node,
 )
 from utils.rsyslog_setup import setup_central_rsyslog
