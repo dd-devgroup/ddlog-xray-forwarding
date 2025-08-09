@@ -36,8 +36,8 @@ $template RemoteLogs,"/var/log/remote/%HOSTNAME%/%PROGRAMNAME%.log"
     except Exception as e:
         print(f"❌ Ошибка настройки центрального rsyslog: {e}")
 
-def setup_remote_rsyslog(node, central_server_ip=None):
-    """
+def setup_remote_rsyslog(node, central_server_ip):
+     """
     Настройка rsyslog на удалённой ноде для отправки логов на центральный сервер.
     central_server_ip - IP или hostname центрального rsyslog.
     """
@@ -60,8 +60,8 @@ input(type="imfile"
         return
     try:
         sftp = node.ssh.open_sftp()
-        with sftp.file(conf_path, "w", encoding="utf-8") as f:
-            f.write(config_content.strip() + "\n")
+        with sftp.file(conf_path, "w") as f:
+            f.write((config_content.strip() + "\n").encode("utf-8"))
         sftp.close()
         stdin, stdout, stderr = node.ssh.exec_command("systemctl restart rsyslog")
         exit_status = stdout.channel.recv_exit_status()
