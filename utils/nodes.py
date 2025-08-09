@@ -9,6 +9,8 @@ from datetime import datetime
 from utils.utils import get_public_ip, convert_old_xray_log_to_json
 from utils.rsyslog_setup import remove_rsyslog_config, remove_ufw_rules, setup_remote_rsyslog
 
+central_server_ip = get_public_ip()
+
 class Node:
     def __init__(self, name, host=None, user=None, port=22, auth_method=None, key_path=None):
         self.name = name
@@ -188,7 +190,7 @@ def add_node(nodes):
         node = Node(name=name, host=host, user=user, port=port, auth_method=auth_method, key_path=key_path)
         if node.connect_ssh():
             print("Настройка rsyslog на удалённой ноде...")
-            setup_remote_rsyslog(node)
+             setup_remote_rsyslog(node, central_server_ip)
             node.start_background_log_collection()
             nodes.append(node)
             print(f"✅ Удалённая нода '{name}' добавлена и настроена.")
