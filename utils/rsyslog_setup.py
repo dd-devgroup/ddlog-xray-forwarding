@@ -37,7 +37,7 @@ $template RemoteLogs,"/var/log/remote/%HOSTNAME%/%PROGRAMNAME%.log"
         print(f"❌ Ошибка настройки центрального rsyslog: {e}")
 
 def setup_remote_rsyslog(node, central_server_ip=None):
-     """
+    """
     Настройка rsyslog на удалённой ноде для отправки логов на центральный сервер.
     central_server_ip - IP или hostname центрального rsyslog.
     """
