@@ -112,3 +112,32 @@ def setup_ufw_remote(node, central_server_ip: str):
         print(f"✅ UFW настроен на удалённой ноде {node.name}.")
     except Exception as e:
         print(f"❌ Ошибка настройки UFW на {node.name}: {e}")
+
+def remove_rsyslog_config(node):
+    if not node.connect_ssh():
+        return
+    conf_path = f"/etc/rsyslog.d/30-xray-{node.name}.conf"
+    try:
+        node.ssh.exec_command(f"rm -f {conf_path} && systemctl restart rsyslog")
+        print(f"❌ Конфиг rsyslog удалён на {node.host}")
+    except Exception as e:
+        print(f"Ошибка при удалении конфига rsyslog на {node.host}: {e}")
+
+def remove_ufw_rules(node, central_server_ip):
+    if not node.connect_ssh():
+        return
+    cmds = [
+        f"ufw delete allow out to {central_server_ip} port 514 proto tcp",
+        f"ufw delete allow out to {central_server_ip} port 514 proto udp",
+    ]
+    for cmd in cmds:
+        try:
+            stdin, stdout, stderr = node.ssh.exec_command(cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status == 0:
+                print(f"Удалено правило ufw: {cmd}")
+            else:
+                err = stderr.read().decode().strip()
+                print(f"Ошибка при удалении правила ufw '{cmd}': {err}")
+        except Exception as e:
+            print(f"Ошибка при выполнении команды '{cmd}': {e}")

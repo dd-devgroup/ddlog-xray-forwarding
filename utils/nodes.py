@@ -7,7 +7,7 @@ import json
 import shlex
 from datetime import datetime
 from utils.utils import get_local_ip, convert_old_xray_log_to_json
-from utils.rsyslog_setup import setup_remote_rsyslog
+from utils.rsyslog_setup import remove_rsyslog_config, remove_ufw_rules
 
 class Node:
     def __init__(self, name, host=None, user=None, port=22, auth_method=None, key_path=None):
@@ -42,51 +42,61 @@ class Node:
             self.ssh = None
             return False
 
-    def get_log_tail_command(self):
-        if self.local:
-            return ["stdbuf", "-oL", "tail", "-n", "+1", "-F", "/var/log/remnanode/xray.out.log"]
-        else:
-            return "tail -n +1 -F /var/log/remnanode/xray.out.log"
+    def start_local_tail_in_background(self):
+        """Для локальной ноды запускаем tail -F в фоне, который пишет логи в json."""
+        filename = f"/var/log/xray_{self.name}.json"
+        self.convert_old_log_to_json()
+
+        # Проверяем, не запущен ли уже tail (по файлу pid, или по процессам — можно добавить)
+        # Для простоты — просто запускаем nohup tail
+        cmd = f"nohup tail -n +1 -F /var/log/remnanode/xray.out.log >> {filename} 2>&1 &"
+        subprocess.Popen(shlex.split(cmd))
+        print(f"✅ Локальный tail запущен в фоне для '{self.name}' → {filename}")
+
+    def start_remote_log_forwarding(self):
+        """Для удалённой ноды настраиваем rsyslog + запускаем форвардер."""
+        if not self.connect_ssh():
+            return
+        print(f"Настройка rsyslog для удалённой ноды {self.name} ({self.host})...")
+        setup_remote_rsyslog(self)
+        print(f"Запуск бинарника форвардера...")
+        self.run_remote_binary()
 
     def start_background_log_collection(self):
-        filename = f"/var/log/xray_{self.name}.json"
-
         if self.local:
-            self.convert_old_log_to_json()
-
-            cmd = f"nohup tail -n +1 -F /var/log/remnanode/xray.out.log >> {filename} 2>&1 &"
-            subprocess.Popen(shlex.split(cmd))
-            print(f"✅ Локальный tail запущен в фоне для '{self.name}' → {filename}")
+            self.start_local_tail_in_background()
         else:
-            if not self.connect_ssh():
-                return
-            _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
-            t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
-            t.start()
-            print(f"✅ Фоновый сбор логов запущен для '{self.name}' → {filename}")
+            self.start_remote_log_forwarding()
 
-    def _stream_logs_and_save(self, stream, filename):
+    def run_remote_binary(self, bin_path="/usr/local/bin/ddlog-xray-forwarding.bin"):
+        if not self.connect_ssh():
+            return
+        cmd = f"nohup {bin_path} > /var/log/ddlog-forwarder.log 2>&1 &"
         try:
-            with open(filename, "a", encoding="utf-8") as logfile:
-                for line in iter(stream.readline, ""):
-                    entry = {
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "node": self.name,
-                        "message": line.strip()
-                    }
-                    logfile.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                    logfile.flush()
+            self.ssh.exec_command(cmd)
+            print(f"✅ Запущен бинарник на {self.host} в фоне.")
         except Exception as e:
-            print(f"Ошибка в потоке логов узла '{self.name}': {e}")
+            print(f"Ошибка запуска бинарника на {self.host}: {e}")
+
+    def convert_old_log_to_json(self):
+        if self.local:
+            log_path = "/var/log/remnanode/xray.out.log"
+            json_path = f"/var/log/xray_{self.name}.json"
+            return convert_old_xray_log_to_json(log_path, json_path)
+        else:
+            print(f"Конвертация доступна только для локальной ноды '{self.name}'")
+            return False
 
     def tail_logs_realtime(self):
+        """Просмотр логов в реальном времени — локально или по SSH."""
         if self.local:
-            proc = subprocess.Popen(self.get_log_tail_command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            cmd = ["tail", "-n", "+1", "-F", "/var/log/remnanode/xray.out.log"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stream = proc.stdout
         else:
             if not self.connect_ssh():
                 return
-            _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
+            _, stream, _ = self.ssh.exec_command("tail -n +1 -F /var/log/remnanode/xray.out.log")
 
         print(f"--- Просмотр логов '{self.name}' (Ctrl+C для выхода) ---")
         try:
@@ -188,7 +198,8 @@ def add_node(nodes):
         print("❌ Некорректный выбор, нода не добавлена.")
 
 
-def remove_remote_node(node):
-    print(f"Удаляем конфиг rsyslog и удаляем ноду {node.name}...")
-    node.remove_rsyslog_config()
+def remove_remote_node(node, central_server_ip):
+    print(f"Удаляем конфиг rsyslog и ufw правила на ноде {node.name}...")
+    remove_rsyslog_config(node)
+    remove_ufw_rules(node, central_server_ip)
     print(f"Удалено.")
