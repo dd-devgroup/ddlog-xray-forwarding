@@ -3,14 +3,16 @@ import threading
 import getpass
 import paramiko
 import os
-
-from utils.utils import get_local_ip
+import json
+import shlex
+from datetime import datetime
+from utils.utils import get_local_ip, convert_old_xray_log_to_json
 from utils.rsyslog_setup import setup_remote_rsyslog
 
 class Node:
     def __init__(self, name, host=None, user=None, port=22, auth_method=None, key_path=None):
         self.name = name
-        self.host = host  # None для локальной ноды
+        self.host = host
         self.user = user
         self.port = port
         self.auth_method = auth_method
@@ -20,8 +22,11 @@ class Node:
         self.local = host is None
 
     def connect_ssh(self):
-        if self.local or self.ssh:
+        if self.local:
             return True
+        if self.ssh:
+            return True
+
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
@@ -34,146 +39,141 @@ class Node:
             return True
         except Exception as e:
             print(f"❌ Ошибка подключения к {self.host}: {e}")
+            self.ssh = None
             return False
 
     def get_log_tail_command(self):
-        # Для локальной ноды команда — просто tail по пути файла
         if self.local:
-            return ["stdbuf", "-oL", "tail", "-n", "+1", "-f", "/var/log/remnanode/xray.out.log"]
+            return ["stdbuf", "-oL", "tail", "-n", "+1", "-F", "/var/log/remnanode/xray.out.log"]
         else:
-            return "tail -n +1 -f /var/log/remnanode/xray.out.log"
+            return "tail -n +1 -F /var/log/remnanode/xray.out.log"
 
     def start_background_log_collection(self):
-        """Запускает фоновый поток, который пишет логи в файл."""
-        # Путь к логу, куда будем сохранять - точно такой же, как в системе
-        filename = "/var/log/xray.log"
+        filename = f"/var/log/xray_{self.name}.json"
+
         if self.local:
-            proc = subprocess.Popen(
-                self.get_log_tail_command(),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            stream = proc.stdout
+            self.convert_old_log_to_json()
+
+            cmd = f"nohup tail -n +1 -F /var/log/remnanode/xray.out.log >> {filename} 2>&1 &"
+            subprocess.Popen(shlex.split(cmd))
+            print(f"✅ Локальный tail запущен в фоне для '{self.name}' → {filename}")
         else:
             if not self.connect_ssh():
                 return
             _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
-        t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
-        t.start()
-        print(f"✅ Фоновый сбор логов запущен для узла '{self.name}' (сохраняется в {filename})")
-
+            t = threading.Thread(target=self._stream_logs_and_save, args=(stream, filename), daemon=True)
+            t.start()
+            print(f"✅ Фоновый сбор логов запущен для '{self.name}' → {filename}")
 
     def _stream_logs_and_save(self, stream, filename):
         try:
             with open(filename, "a", encoding="utf-8") as logfile:
                 for line in iter(stream.readline, ""):
-                    print(f"{line.strip()}")
-                    logfile.write(line)
+                    entry = {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "node": self.name,
+                        "message": line.strip()
+                    }
+                    logfile.write(json.dumps(entry, ensure_ascii=False) + "\n")
                     logfile.flush()
         except Exception as e:
             print(f"Ошибка в потоке логов узла '{self.name}': {e}")
 
-
     def tail_logs_realtime(self):
-        """Показывает логи в реальном времени в консоли (без сохранения)."""
         if self.local:
-            proc = subprocess.Popen(
-                self.get_log_tail_command(),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
+            proc = subprocess.Popen(self.get_log_tail_command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stream = proc.stdout
         else:
             if not self.connect_ssh():
                 return
             _, stream, _ = self.ssh.exec_command(self.get_log_tail_command())
 
-        print(f"--- Просмотр логов узла '{self.name}' (нажмите Ctrl+C для выхода) ---")
+        print(f"--- Просмотр логов '{self.name}' (Ctrl+C для выхода) ---")
         try:
             for line in iter(stream.readline, ""):
                 print(line, end="")
         except KeyboardInterrupt:
-            print("\nВыход из просмотра логов.")
+            print("\nВыход.")
         except Exception as e:
-            print(f"Ошибка при просмотре логов узла '{self.name}': {e}")
+            print(f"Ошибка при просмотре: {e}")
+
+    def remove_rsyslog_config(self):
+        if self.local:
+            print(f"Локальную ноду '{self.name}' удалять вручную.")
+            return
+        if not self.connect_ssh():
+            return
+        conf_path = f"/etc/rsyslog.d/30-xray-{self.name}.conf"
+        try:
+            self.ssh.exec_command(f"rm -f {conf_path} && systemctl restart rsyslog")
+            print(f"❌ Конфиг rsyslog удалён на {self.host}")
+        except Exception as e:
+            print(f"Ошибка при удалении конфига rsyslog на {self.host}: {e}")
+
+    def run_remote_binary(self, bin_path="/usr/local/bin/ddlog-xray-forwarding.bin"):
+        if not self.connect_ssh():
+            return
+        cmd = f"nohup {bin_path} > /var/log/ddlog-forwarder.log 2>&1 &"
+        try:
+            self.ssh.exec_command(cmd)
+            print(f"✅ Запущен бинарник на {self.host} в фоне.")
+        except Exception as e:
+            print(f"Ошибка запуска бинарника на {self.host}: {e}")
+
+    def convert_old_log_to_json(self):
+        if self.local:
+            log_path = "/var/log/remnanode/xray.out.log"
+            json_path = f"/var/log/xray_{self.name}.json"
+            return convert_old_xray_log_to_json(log_path, json_path)
+        else:
+            print(f"Конвертация доступна только для локальной ноды '{self.name}'")
+            return False
 
 def load_nodes():
-    import json
-
-    NODES_FILE = "nodes.json"
-    if os.path.exists(NODES_FILE):
-        with open(NODES_FILE, "r", encoding="utf-8") as f:
+    if os.path.exists("nodes.json"):
+        with open("nodes.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            nodes = []
-            for n in data:
-                node = Node(
-                    name=n["name"],
-                    host=n.get("host"),  
-                    user=n.get("user"),
-                    port=n.get("port", 22),
-                    auth_method=n.get("auth_method"),
-                    key_path=n.get("key_path"),
-                )
-                nodes.append(node)
-            return nodes
-    else:
-        return []
-
+            return [Node(**n) for n in data]
+    return []
 
 def save_nodes(nodes):
-    import json
-
-    NODES_FILE = "nodes.json"
-    data = []
-    for n in nodes:
-        data.append({
+    with open("nodes.json", "w", encoding="utf-8") as f:
+        json.dump([{
             "name": n.name,
-            "host": n.host, 
+            "host": n.host,
             "user": n.user,
             "port": n.port,
             "auth_method": n.auth_method,
-            "key_path": n.key_path,
-        })
-    with open(NODES_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
+            "key_path": n.key_path
+        } for n in nodes], f, ensure_ascii=False, indent=2)
 
 def add_remote_node(nodes):
-    host = input("IP ноды (оставьте пустым для локальной): ").strip()
-    name = input("Название (уникальное): ").strip()
-    if any(n.name == name for n in nodes):
-        print("Нода с таким именем уже есть.")
-        return
-
-    if not host:
-        # Создаем локальную ноду
-        node = Node(name=name)
-        nodes.append(node)
-        print(f"✅ Локальная нода '{name}' добавлена.")
-        return
-
-    user = input("SSH пользователь (по умолчанию root): ").strip() or "root"
-    port = int(input("SSH порт (по умолчанию 22): ").strip() or "22")
-
-    auth_method = input("Аутентификация (1 - ключ, 2 - пароль): ").strip()
-    use_key = auth_method == "1"
-
-    key_path = None
-    password = None
-    if use_key:
-        key_path = input("Путь к SSH-ключу (по умолчанию ~/.ssh/id_rsa): ").strip() or os.path.expanduser("~/.ssh/id_rsa")
+    print("Добавление удалённой ноды:")
+    name = input("Имя ноды: ").strip()
+    host = input("IP или hostname: ").strip()
+    user = input("Пользователь SSH: ").strip()
+    port_str = input("Порт SSH (по умолчанию 22): ").strip()
+    port = int(port_str) if port_str.isdigit() else 22
+    print("Выберите метод аутентификации:\n1) SSH key\n2) Пароль")
+    auth_choice = input("Выбор (1/2): ").strip()
+    if auth_choice == "1":
+        auth_method = "key"
+        key_path = input("Путь к SSH private key (например ~/.ssh/id_rsa): ").strip()
     else:
-        password = getpass.getpass("Введите SSH пароль: ")
+        auth_method = "password"
+        key_path = None
 
-    node = Node(name=name, host=host, user=user, port=port,
-                auth_method="key" if use_key else "password", key_path=key_path)
-    if not node.connect_ssh():
-        print("Не удалось подключиться к удалённой ноде.")
-        return
+    node = Node(name=name, host=host, user=user, port=port, auth_method=auth_method, key_path=key_path)
+    if node.connect_ssh():
+        print("Настройка rsyslog на удалённой ноде...")
+        setup_remote_rsyslog(node)
+        node.start_background_log_collection()
+        nodes.append(node)
+        print(f"✅ Нода '{name}' добавлена и настроена.")
+    else:
+        print("❌ Не удалось подключиться и настроить ноду.")
 
-    try:
-        setup_remote_rsyslog(node, get_local_ip())
-        print(f"✅ rsyslog настроен для {name}.")
-    except Exception as e:
-        print(f"❌ Ошибка при настройке rsyslog: {e}")
-
-    nodes.append(node)
-
+def remove_remote_node(node):
+    print(f"Удаляем конфиг rsyslog и удаляем ноду {node.name}...")
+    node.remove_rsyslog_config()
+    print(f"Удалено.")
